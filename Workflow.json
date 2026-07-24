@@ -1,0 +1,1152 @@
+{
+  "name": "TEST",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {}
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -3248,
+        -240
+      ],
+      "id": "54bc35b6-c887-4358-9735-b7e56f2248b6",
+      "name": "Schedule Trigger",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -2800,
+        -240
+      ],
+      "id": "22451670-8660-42e4-84f4-3663aa196362",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// CLEAN NODE — FINAL HARDENED VERSION (STRUCTURED-FIRST FIX)\n// ============================================================\n\n// ─────────────────────────────────────────────────────────────\n// 1. RAW INPUT\n// ─────────────────────────────────────────────────────────────\nlet raw =\n  $json[\"text\"] ||\n  $json[\"html\"] ||\n  $json[\"rawText\"] ||\n  $json[\"email body\"] ||\n  $json[\"body\"] ||\n  $json[\"message\"] ||\n  $json[\"snippet\"] ||\n  $json[\"textPlain\"] ||\n  $json[\"textHtml\"] ||\n  \"\";\n\n// ─────────────────────────────────────────────────────────────\n// FIX BROKEN TRIPLE QUOTES\n// ─────────────────────────────────────────────────────────────\nraw = String(raw)\n  .replace(/\"\"\"/g, '\"')\n  .replace(/'''/g, \"'\");\n\n// ─────────────────────────────────────────────────────────────\n// REMOVE INVISIBLE CHARS\n// ─────────────────────────────────────────────────────────────\nfunction stripInvisibleChars(str) {\n  return String(str || \"\")\n    .replace(/[\\u200B-\\u200D\\uFEFF]/g, \"\")\n    .replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]/g, \" \");\n}\n\n// ─────────────────────────────────────────────────────────────\n// HTML STRIPPER\n// ─────────────────────────────────────────────────────────────\nfunction stripHtml(str) {\n  return String(str || \"\")\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, \"\")\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, \"\")\n    .replace(/<br\\s*\\/?>/gi, \"\\n\")\n    .replace(/<\\/?(p|div|li|tr|td|th|h[1-6])[^>]*>/gi, \"\\n\")\n    .replace(/<[^>]*>/g, \"\")\n    .replace(/&nbsp;/gi, \" \")\n    .replace(/&amp;/gi, \"&\")\n    .replace(/&lt;/gi, \"<\")\n    .replace(/&gt;/gi, \">\")\n    .replace(/&quot;/gi, '\"')\n    .replace(/&#39;/gi, \"'\");\n}\n\n// ─────────────────────────────────────────────────────────────\n// NORMALIZE WHITESPACE\n// ─────────────────────────────────────────────────────────────\nfunction normalizeWS(str) {\n  return String(str || \"\")\n    .replace(/\\r/g, \"\\n\")\n    .replace(/\\t/g, \" \")\n    .replace(/[ ]{2,}/g, \" \")\n    .replace(/\\n{3,}/g, \"\\n\\n\")\n    .trim();\n}\n\n// ─────────────────────────────────────────────────────────────\n// SAFE RAW\n// ─────────────────────────────────────────────────────────────\nconst decodedRaw = /<[a-z][\\s\\S]*>/i.test(raw)\n  ? stripHtml(raw)\n  : raw;\n\nconst safeRaw = stripInvisibleChars(decodedRaw);\n\n// ============================================================\n// 🔥 STRUCTURED FIELD EXTRACTOR (NEW CORE FIX)\n// ============================================================\nfunction extractField(text, label) {\n\n  if (!text) return null;\n\n  const escaped = label.replace(/[.*+?^${}()|[\\]\\\\]/g, \"\\\\$&\");\n\n  const patterns = [\n\n    // *Label:* value\n    new RegExp(\n      \"\\\\*\" + escaped + \":\\\\*\\\\s*([^\\\\n]+)\",\n      \"i\"\n    ),\n\n    // *Label:*\n    // value\n    new RegExp(\n      \"\\\\*\" + escaped + \":\\\\*\\\\s*\\\\n+\\\\s*([^\\\\n]+)\",\n      \"i\"\n    ),\n\n    // Label: value\n    new RegExp(\n      escaped + \"\\\\s*:\\\\s*([^\\\\n]+)\",\n      \"i\"\n    ),\n\n    // Label:\n    // value\n    new RegExp(\n      escaped + \"\\\\s*:\\\\s*\\\\n+\\\\s*([^\\\\n]+)\",\n      \"i\"\n    )\n\n  ];\n\n  for (const re of patterns) {\n\n    const match = text.match(re);\n\n    if (match?.[1]) {\n      return match[1].trim();\n    }\n  }\n\n  return null;\n}\n// ============================================================\n// EMAIL EXTRACTION (STRUCTURED-FIRST)\n// ============================================================\nfunction extractEmail(text, ctx) {\n\n  const structured = extractField(text, \"Email\");\n\n  if (structured) return structured;\n\n  const repaired = String(text || \"\")\n    .replace(/\\s*\\[\\s*at\\s*\\]\\s*/gi, \"@\")\n    .replace(/\\s*\\(\\s*at\\s*\\)\\s*/gi, \"@\")\n    .replace(/\\s*\\[dot\\]\\s*/gi, \".\")\n    .replace(/\\s*\\(dot\\)\\s*/gi, \".\");\n\n  const emailRe =\n    /([a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,})/g;\n\n  const matches = [...repaired.matchAll(emailRe)]\n    .map(m => m[1].toLowerCase());\n\n  const skip = [\n    /noreply/i,\n    /no-reply/i,\n    /donotreply/i,\n    /shopify/i,\n    /mailer-daemon/i,\n    /postmaster/i,\n    /notifications@/i,\n    /support@yourstore/i\n  ];\n\n  const filtered = matches.filter(\n    e => !skip.some(p => p.test(e))\n  );\n\n  return (\n    filtered[0] ||\n    ctx.from?.value?.[0]?.address ||\n    ctx.from?.address ||\n    ctx.email ||\n    ctx.replyTo ||\n    \"\"\n  );\n}\n\nconst email = extractEmail(safeRaw, $json);\n\n// ============================================================\n// PHONE EXTRACTION (STRUCTURED-FIRST)\n// ============================================================\nfunction extractPhone(text) {\n\n  const structured = extractField(text, \"Contact Number\");\n  if (structured) {\n    const digits = structured.replace(/\\D/g, \"\");\n    return digits ? (digits.length === 10 ? \"+91\" + digits : digits) : null;\n  }\n\n  if (!text) return null;\n\n  const t = String(text).replace(/[.\\-\\s]/g, \" \");\n\n  const patterns = [\n    /(?:\\+91|0091)\\s*(\\d[\\d\\s]{8,12}\\d)/,\n    /\\b([6-9]\\d{9})\\b/,\n    /\\+(\\d{1,3}[\\s\\-]?\\d{6,14})/,\n    /\\b(\\d{10,15})\\b/\n  ];\n\n  for (const re of patterns) {\n    const m = t.match(re);\n    if (m) {\n      const digits = (m[1] || m[0]).replace(/\\D/g, \"\");\n      if (digits.length >= 10 && digits.length <= 15) {\n        if (/^[6-9]\\d{9}$/.test(digits)) return \"+91\" + digits;\n        return digits;\n      }\n    }\n  }\n\n  return null;\n}\n\nconst phoneNumber = extractPhone(safeRaw);\n\n// ============================================================\n// ORDER ID EXTRACTION (STRUCTURED-FIRST)\n// ============================================================\nfunction extractOrderId(text, ctx) {\n\n  const structured =\n    extractField(text, \"Order Number\") ||\n    extractField(text, \"Order Name\");\n\n  if (structured) {\n    const digits = structured.replace(/\\D/g, \"\");\n    return digits || null;\n  }\n\n  if (!text) return null;\n\n  const t = String(text).replace(/[\\u2013\\u2014]/g, \"-\");\n\n  const patterns = [\n    /Order Number:\\s*(\\d{4,10})/i,\n    /Order Name:\\s*#?(\\d{4,10})/i,\n    /order[^\\d]{0,20}(\\d{4,10})/i,\n    /#(\\d{4,10})\\b/\n  ];\n\n  for (const re of patterns) {\n    const m = t.match(re);\n    if (m?.[1]) return m[1];\n  }\n\n  const subject = String(ctx.subject || \"\");\n  const sm = subject.match(/#?(\\d{4,10})/);\n\n  return sm?.[1] || null;\n}\n\nconst orderId = extractOrderId(safeRaw, $json);\n\n// ============================================================\n// MESSAGE EXTRACTION (UNCHANGED CORE LOGIC, SLIGHTLY SAFE)\n// ============================================================\nfunction extractMessageBlock(t) {\n\n  let msg =\n    t.match(/Message:\\s*([\\s\\S]*?)(?:Attachment Link:|Order Number:|Order Name:|View Order|View Customer|$)/i)?.[1];\n\n  if (msg) return msg;\n\n  msg =\n    t.match(/Reason For Contacting:[\\s\\S]*?\\n([\\s\\S]*?)(?:View Order|Order Number:|$)/i)?.[1];\n\n  if (msg) return msg;\n\n  return null;\n}\n\n// ============================================================\n// CLEAN TEXT BUILDER (HARDENED WITHOUT CHANGING CORE LOGIC)\n// ============================================================\nfunction buildCleanText(text) {\n\n  let t = String(text || \"\");\n\n  t = stripInvisibleChars(t);\n\n  // ───────────────────────────────────────────────────────────\n  // REMOVE URLS\n  // ───────────────────────────────────────────────────────────\n  t = t.replace(/https?:\\/\\/[^\\s]+/gi, \"\");\n\n  // ───────────────────────────────────────────────────────────\n  // REMOVE FORWARDED/REPLY HEADERS\n  // ───────────────────────────────────────────────────────────\n  t = t.replace(\n    /-{2,}\\s*Forwarded message\\s*-{2,}[\\s\\S]*?wrote:/gi,\n    \"\"\n  );\n\n  // ───────────────────────────────────────────────────────────\n  // REMOVE GMAIL QUOTE PREFIXES\n  // > hello\n  // > thanks\n  // ───────────────────────────────────────────────────────────\n  t = t.replace(/^>\\s?/gm, \"\");\n\n  // ───────────────────────────────────────────────────────────\n  // SPLIT ON EMAIL REPLY HEADERS — keep only the newest message\n  // (the part before the first \"On ... wrote:\")\n  // ───────────────────────────────────────────────────────────\n  const parts = t.split(/\\n[>\\s]*On .+ wrote:/mi);\n  t = parts[0];\n\n  // ───────────────────────────────────────────────────────────\n  // TRY STRUCTURED MESSAGE EXTRACTION FIRST\n  // ───────────────────────────────────────────────────────────\n  let message = extractMessageBlock(t);\n\n  if (message) {\n    // Shopify‑form email — we already have the clean message field\n    t = message;\n\n  } else {\n\n    // ─────────────────────────────────────────────────────────\n    // SPLIT LINES\n    // ─────────────────────────────────────────────────────────\n    const lines = t\n      .split(\"\\n\")\n      .map(l => l.trim())\n      .filter(Boolean);\n\n    // ─────────────────────────────────────────────────────────\n    // REMOVE SYSTEM / SHOPIFY / HEADER LINES\n    // ─────────────────────────────────────────────────────────\n    const filtered = lines.filter(l => {\n      return !/^(index|country code|page|customer name|email|contact number|view|order date|order number|order name|order total|order payment|order fulfillment|attachment link|message received from contact us form of customer account page|reason for contacting|from:|date:|subject:|to:)/i.test(l);\n    });\n\n    // ─────────────────────────────────────────────────────────\n    // REMOVE SIGNATURE BLOCKS\n    // ─────────────────────────────────────────────────────────\n    const withoutSignature = [];\n\n    for (const line of filtered) {\n      if (\n        /^(thanks?\\s*&?\\s*regards|regards|best regards|warm regards|sent from my iphone|thank you)$/i.test(line)\n      ) {\n        break;\n      }\n      withoutSignature.push(line);\n    }\n\n    // ─────────────────────────────────────────────────────────\n    // KEEP TOP CONTENT — cap at 50 lines (generous but safe)\n    // ─────────────────────────────────────────────────────────\n    t = withoutSignature\n      .filter(l => l.length > 2)\n      .slice(0, 50)   // was 20, now 50 to avoid cutting off long genuine messages\n      .join(\" \");\n  }\n\n  // ───────────────────────────────────────────────────────────\n  // FINAL CLEANUPS\n  // ───────────────────────────────────────────────────────────\n  t = t\n    .replace(/([a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,})/g, \"\")\n    .replace(/(?:\\+91|0)?\\s*[6-9]\\d{9}/g, \"\")\n    .replace(/\\b(shopify|attachment link|view order|view customer)\\b.*$/gim, \"\")\n    .replace(/Order (Number|Name):.*$/gim, \"\")\n    .trim();\n\n  return normalizeWS(t);\n}\nconst cleanText = buildCleanText(safeRaw);\n\n// ============================================================\n// TRACKING INDEX (UNCHANGED)\n// ============================================================\nconst extractedIndex =\n  (safeRaw.match(/\\bIN\\s*\\d+\\b/i) || [\"\"])[0]\n    .replace(/\\s/g, \"\")\n    .toUpperCase() || null;\n\n// ============================================================\n// FINAL OUTPUT\n// ============================================================\nreturn {\n  orderId,\n  email,\n  phoneNumber,\n  rawText: raw,\n  cleanText,\n  extractedIndex\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2576,
+        -304
+      ],
+      "id": "b0cf72fb-d551-4a64-ab48-b6c07a6bc461",
+      "name": "Clean"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "fee05fa6-33e1-486e-b7ef-494f795e63ce",
+              "name": "cleanText",
+              "value": "={{ $json.cleanText }}",
+              "type": "string"
+            },
+            {
+              "id": "574dc9b5-d7bb-45ec-b7ac-e0a869e11229",
+              "name": "threadId",
+              "value": "={{ $json.threadId }}{{ $('Get many messages').item.json.threadId }}",
+              "type": "string"
+            },
+            {
+              "id": "e8681876-0575-4249-87ab-15e85beda94f",
+              "name": "messageId",
+              "value": "={{ $json.id }}{{ $('Get many messages').item.json.messageId }}",
+              "type": "string"
+            },
+            {
+              "id": "d95aa6c3-c56e-4dd7-84ef-93416628989a",
+              "name": "orderId",
+              "value": "={{ $json.orderId }}",
+              "type": "string"
+            },
+            {
+              "id": "d0974528-915a-45e2-9aa0-f20b8b5f8e6f",
+              "name": "phoneNumber",
+              "value": "={{ $json.phoneNumber }}",
+              "type": "string"
+            },
+            {
+              "id": "fd418e65-d1ce-48fd-ae1c-666e63299bba",
+              "name": "email",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2352,
+        -304
+      ],
+      "id": "ef9dc66f-37a7-4476-b8ca-3fb20d62314d",
+      "name": "Set Email"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8080/completion",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"models\": \"Gemma4-E4B-q8_0.gguf\",\n  \"prompt\": \"You are an e-commerce support classifier. Return ONLY valid JSON: {\\\"intent\\\":\\\"...\\\",\\\"tone\\\":\\\"...\\\"}. No markdown, no explanation, nothing else.\\n\\nIGNORE: Shopify metadata, order form fields, email signatures, quoted chains (> lines), greetings.\\nClassify only the customer's core message.\\n\\nTYPOS: 'cancer it'→cancel | 'extange/exhange'→exchange | 'mistick/bymistake'→cancel | 'size isu'→size issue | 'price isu'→price complaint | 'argent'→urgent\\n\\nINTENT RULES (match in order, stop at first match):\\n\\nescalate_senior: cheat/fraud/scam/FIR/police/cybercrime/consumer court/social media threat/refund to wrong account/credited to someone else/credited to another account/wrong UPI credited/unprofessional + refund\\n\\nvideo_missing: customer HAS sent or IS sending evidence — 'sent video/already sent it/video sent on whatsapp/sharing photos/see video attached/video bheja/I will upload shortly'\\n\\ncancel: cancel/cancel it/cancel kar do/order cancel karna h/don't want/no longer needed/bymistake ordered/galti se/wrong order/won't be available/out of station/'late delivery' as sole reason/'not received+cancel'/'cancel+wrong size' pre-delivery/'cancer it'. NOTE: 'change address or cancel'→change_pincode wins.\\n\\nchange_size: exchange/return WITH explicit size target. Explicit: XS S M L XL XXL XXXL as desired. Relative: bigger size/larger size/smaller size/one size up/one size down. Examples: 'exchange to S'/'want L'/'need XL'/'require size L'/'I want L size'/'exchange with smaller size'/'need one size bigger'/'extange size'+any size. NO SIZE WORD = not change_size.\\n\\nrequest_return: return without size target. Direct: return/wapas lo/Im return/Return(alone)/book a return/arrange return pickup/hi team please return. Quality: quality issue/poor quality/fabric thin/transparent/daag/dhaage nikale/purana/used product/faded/color mismatch/wrong color/wrong product/not as described/cotton but rayon. Fit no size: size issue/size not fit/fitting issue/little tight/too loose/too tight. Process Qs: 'how to return?'/'apply for return?' → request_return NOT return_error. 'Return/Exchange' two words → request_return. 'size is small' alone → request_return. 'size issues' alone → request_return. 'Not good' in return context → request_return.\\n\\nreturn_error: website blocking return — 'return option not showing/unable to raise return request/can't sign in + wants to return/login issue + return'\\n\\nrequest_exchange: exchange with NO size and NO specific product — 'exchange order/exchange it/about my exchange items/exchange with some other piece/I want exchange' alone.\\n\\npickup_delay: return raised but pickup not done — 'already placed return request when processed/no pickup call/nobody came for pickup/raised request X days ago nobody came/why pickup delayed/2 weeks no pickup/complete this return ASAP/items not picked up/what about my pickup request/filed return no action/I raised return can't track status'\\n\\nreturn_intransit: pickup done, waiting for next step — 'picked up on [date]/product picked up but no update/delivery partner collected when will I get new order'\\n\\nreturn_no_refund: pickup done, no refund — 'return picked up but money not received/no refund after pickup'\\n\\nrefund_return: return completed, asking when refund arrives — 'I already returned when will I get refund'\\n\\nrefund_status: money not received, no pickup context — 'refund/where is my refund/paisa wapas/payment not received/refund nahi aaya/Payment is Not received yet/confirm about refund/please do refund/I did not receive refund'\\n\\nnot_fulfilled: no confirmation after payment — 'payment done order not confirmed/money deducted no SMS/order not in history/transaction ID+order not confirmed/no confirmation message/site said 24hr dispatch but been more than that'\\n\\nfake_delivery: marked delivered but not received — 'order shows fulfilled but not received/delivery not attempted/I was home but no delivery/Please reattempt/OTP not received for delivery/shows delivered but I didnt get it'\\n\\nchange_pincode: address change — 'change address/change delivery address/new address/wrong address/address update/entered wrong PIN/want to change my address'\\n\\ndelivery_timing: needs by date or urgently — 'deliver before [date]/need it before [date]/early delivery/deliver asap/highest priority/urgent/deliver faster/I need it today/traveling soon need it'\\n\\nprocessing_details: dispatch/packing status — 'when will order be shipped/when dispatched/order not shipped/dispatch kab hoga/packed or not/please ship my order asap'\\n\\ntracking_info: DEFAULT for order location/status. Use when no other rule matches — 'where is my order/when will I receive/when will I get/eagerly waiting/how to track/tracking ID/tracking number/order status/order update/any update/delivery date/Delivery alone/order details alone/unable to track/no update/waiting for order/when can I expect/Is this order cancel(checking status)'\\n\\nout_of_stock: 'out of stock/item unavailable/restocked/back in stock'\\n\\nsize_unavailable: 'my size not available/XL not available/size unavailable/XL size not available+refund'\\n\\nlong_stockout: 'exchange delayed due to out of stock/waiting weeks out of stock/restocked hope you dispatch'\\n\\nhow_video: asking HOW to record — 'how to make video/what kind of video/unboxing video kaise'\\n\\ngeneral_query: fallback — price complaints/change phone number/vague messages/pure thank you/short confirmations(Yes/Sure)/unreadable\\n\\nCOMPOUND:\\n'cancel+full refund'→cancel | 'change address OR cancel'→change_pincode | 'return+size mentioned'→change_size | 'Return/Exchange' two words→request_return | 'late delivery' sole message→cancel | 'size not fit' no target→request_return | 'Please reattempt'→fake_delivery | 'don't want' alone→cancel | 'I want exchange size'→change_size | 'Mistick'→cancel\\n\\nTONE:\\nangry: cheat/fraud/threats/FIR/ALL CAPS insults\\nfrustrated: still waiting/no response/been a week/again asking/poor service/repeated punctuation like ???\\ncalm: please/kindly/thank you/sorry/polite personal reason\\nneutral: short factual, no emotion\\n\\nQUICK MAP:\\n'Return'→{request_return,neutral} | 'Cancel'→{cancel,neutral} | 'Refund'→{refund_status,neutral} | 'Exchange'→{request_exchange,neutral} | 'Where is my order'→{tracking_info,neutral} | 'Delivery'→{tracking_info,neutral} | 'Order status'→{tracking_info,neutral} | 'Any update'→{tracking_info,neutral} | 'Want L'→{change_size,neutral} | 'Require Size L'→{change_size,neutral} | 'size not fit'→{request_return,neutral} | 'size is small'→{request_return,neutral} | 'I have size issues'→{request_return,neutral} | 'Extange size'→{change_size,neutral} | 'cancer it'→{cancel,neutral} | 'Mistick'→{cancel,neutral} | 'don't want'→{cancel,neutral} | 'Sent video'→{video_missing,neutral} | 'already sent it'→{video_missing,neutral} | 'Payment is Not received yet'→{refund_status,neutral} | 'Late delivery' alone→{cancel,neutral} | 'Too pricey'→{general_query,neutral} | 'Please reattempt'→{fake_delivery,neutral} | 'Return/Exchange'→{request_return,neutral} | 'About my exchange items'→{request_exchange,neutral}\\n\\nINPUT: {{ JSON.stringify($json.cleanText.replace(/^Index:\\\\s*/i, '').toLowerCase()).slice(1,-1) }}\\n\\nOUTPUT:\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2128,
+        -304
+      ],
+      "id": "77e775e5-0c01-4d6b-90c2-a538b18b69df",
+      "name": "Intent/Tone",
+      "executeOnce": false,
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SUPPORT EVAL NODE — PRODUCTION HARDENED VERSION\n// ============================================================\n\nconst input = $('Set Email').first().json;\nconst cleanText = String(input.cleanText || \"\");\nconst orderId   = (input.orderId || \"\").toString().replace(\"#\", \"\").trim();\n\n// ── 1. PARSE LLM RESPONSE ──\n\nlet llm = { intent: \"general_query\", tone: \"neutral\" };\nlet llmParseError = false;\n\ntry {\n\n  let raw =\n    $json?.body ||\n    $json?.content ||\n    ($json?.choices?.[0]?.message?.content) ||\n    \"{}\";\n\n  if (Array.isArray(raw)) {\n    raw = raw\n      .filter(b => b.type === \"text\")\n      .map(b => b.text)\n      .join(\"\") || \"{}\";\n  }\n\n  raw = String(raw)\n    .replace(/^```json\\s*/i, \"\")\n    .replace(/^```\\s*/i, \"\")\n    .replace(/\\s*```$/i, \"\")\n    .trim();\n\n  const jsonMatch = raw.match(/\\{[\\s\\S]*?\\}/);\n\n  if (jsonMatch) {\n\n    const parsed = JSON.parse(jsonMatch[0]);\n\n    llm.intent = (parsed.intent || \"general_query\")\n      .toString()\n      .toLowerCase()\n      .trim();\n\n    llm.tone = (parsed.tone || \"neutral\")\n      .toString()\n      .toLowerCase()\n      .trim();\n  }\n\n} catch (e) {\n\n  llmParseError = true;\n\n  llm = {\n    intent: \"general_query\",\n    tone: \"neutral\"\n  };\n}\n\n// ── 2. APPLY OVERRIDES (before validation) ──\nlet finalIntent = llm.intent;\nlet finalTone = llm.tone;\n\n// 2a. “already sent video” → video_received_confirm\nconst userSaysVideoSent = /(already|have) sent (video|unboxing|the video)|video (attached|uploaded|shared|bheja|whatsapp)|attached (video|file)|please check (the video|attachment)/i.test(cleanText);\nif (finalIntent === \"video_missing\" && userSaysVideoSent) {\n  finalIntent = \"video_received_confirm\";\n}\n\n// 2b. Return login issue → force return_error\nif (/can't (sign in|login|access my account)|unable to (log|sign) in|return option not showing/i.test(cleanText) && /return|exchange/i.test(cleanText)) {\n  finalIntent = \"return_error\";\n}\n\n// 2c. Cancel refund_status entirely (map to general_query → will be blocked)\nif (finalIntent === \"refund_status\") {\n  finalIntent = \"general_query\";\n}\n\n// 2d. Hard address change override\nconst explicitAddressChange = /(change|update|correct|modify|new) (address|pincode|delivery address|shipping address)/i.test(cleanText);\nif (explicitAddressChange && finalIntent !== \"change_pincode\") {\n  finalIntent = \"change_pincode\";\n}\n\n// ── 3. VALIDATE INTENTS (allow video_received_confirm) ──\n\nconst ALLOWED_INTENTS = new Set([\n  \"general_query\",\n  \"get_orderid\",\n  \"missing_orderid\",\n  \"not_fulfilled\",\n  \"delivery_timing\",\n  \"processing_details\",\n  \"tracking_info\",\n  \"request_exchange\",\n  \"request_return\",\n  \"cancel\",\n  \"change_size\",\n  \"change_pincode\",\n  \"refund_status\",\n  \"return_error\",\n  \"video_missing\",\n  \"how_video\",\n  \"fake_delivery\",\n  \"return_approved\",\n  \"pickup_scheduled\",\n  \"return_no_refund\",\n  \"refund_return\",\n  \"return_intransit\",\n  \"address_locked\",\n  \"ask_address\",\n  \"full_address\",\n  \"pincode_unserviceable\",\n  \"delivery_refused\",\n  \"pickup_delay\",\n  \"policy_expired\",\n  \"out_of_stock\",\n  \"size_unavailable\",\n  \"stock_pincode\",\n  \"long_stockout\",\n  \"escalate_senior\",\n  \"pickup_arranging\",\n  \"consignee_refused\",\n  \"video_received_confirm\"   // added\n]);\n\nif (!ALLOWED_INTENTS.has(finalIntent)) {\n  finalIntent = \"general_query\";\n}\n\n// ── 4. VALIDATE TONE ──\n\nconst ALLOWED_TONES = new Set([\n  \"angry\",\n  \"frustrated\",\n  \"calm\",\n  \"neutral\"\n]);\n\nif (!ALLOWED_TONES.has(finalTone)) {\n  finalTone = \"neutral\";\n}\n\n// ── 5. MULTI ORDER DETECTION ──\n\nfunction isLikelyOrderId(num) {\n\n  const n = num.toString();\n\n  if (n.length < 4 || n.length > 8) return false;\n\n  if (/^20[2-3]\\d$/.test(n)) return false;\n\n  if (/^19\\d{2}$/.test(n)) return false;\n\n  if (/^(0?[1-9]|1[0-2])$/.test(n)) return false;\n\n  if (/^(0?[1-9]|[12]\\d|3[01])$/.test(n)) return false;\n\n  return true;\n}\n\nfunction isInOrderContext(num, text) {\n\n  const t = text.toLowerCase();\n\n  const idx = t.indexOf(num);\n\n  if (idx === -1) return false;\n\n  const win = t.slice(\n    Math.max(0, idx - 80),\n    idx + 80\n  );\n\n  return /order|invoice|purchase|booking|#/.test(win);\n}\n\nconst allCandidates =\n  cleanText.match(/\\b\\d{4,8}\\b/g) || [];\n\nconst likelyCandidates =\n  [...new Set(allCandidates.filter(isLikelyOrderId))];\n\nconst otherIds =\n  likelyCandidates.filter(\n    n => n !== orderId && isInOrderContext(n, cleanText)\n  );\n\nconst isMultiOrder = otherIds.length > 0;\n\nconst order_count = isMultiOrder\n  ? otherIds.length + (orderId ? 1 : 0)\n  : (orderId ? 1 : 0);\n\n// ── 6. ADDRESS CHANGE DETECTION ──\n\nfunction detectAddressChange(text, intent) {\n\n  const t = text.toLowerCase();\n\n  const CHANGE = [\n\n    /change\\s+(?:my\\s+)?(?:shipping\\s+|delivery\\s+)?address/i,\n    /update\\s+(?:my\\s+)?(?:shipping\\s+|delivery\\s+)?address/i,\n    /modify\\s+(?:my\\s+)?(?:shipping\\s+|delivery\\s+)?address/i,\n    /edit\\s+(?:my\\s+)?(?:shipping\\s+|delivery\\s+)?address/i,\n\n    /wrong\\s+address/i,\n    /incorrect\\s+address/i,\n\n    /new\\s+address/i,\n    /different\\s+address/i,\n    /address\\s+change/i,\n\n    /change\\s+(?:my\\s+)?pin\\s*code/i,\n    /update\\s+(?:my\\s+)?pin\\s*code/i,\n    /wrong\\s+pin\\s*code/i,\n    /incorrect\\s+pin\\s*code/i,\n\n    /galat\\s+address/i,\n    /naya\\s+address/i,\n    /dusra\\s+address/i,\n    /galat\\s+pin\\s*code/i\n  ];\n\n  const NEGATE = [\n\n    /address\\s+(?:is\\s+)?(?:correct|right|fine|ok|okay|same|proper)/i,\n    /same\\s+address/i,\n    /address\\s+(?:sahi|thik|theek)\\s+(?:hai|he)/i\n  ];\n\n  const hasChange = CHANGE.some(r => r.test(t));\n\n  const hasNegate = NEGATE.some(r => r.test(t));\n\n  const llmSays = [\n    \"change_pincode\",\n    \"ask_address\",\n    \"address_locked\",\n    \"full_address\"\n  ].includes(intent);\n\n  return (hasChange && !hasNegate) || llmSays;\n}\n\nconst isAddressChange =\n  detectAddressChange(cleanText, finalIntent);\n\n// ── 7. EDGE CASE DETECTION ──\n\nfunction detectEdgeCase(text, intent) {\n\n  const t = text.toLowerCase();\n\n  const LEGAL = [\n\n    /consumer\\s+(?:court|forum|commission|helpline)/i,\n    /legal\\s+(?:action|notice|case|proceeding)/i,\n    /file\\s+(?:a\\s+)?(?:fir|lawsuit|suit)/i,\n    /go(?:ing)?\\s+to\\s+(?:court|police)/i,\n    /sue\\s+(?:you|your)/i,\n    /police\\s+(?:complaint|report|case)/i,\n    /cyber\\s*(?:crime|cell|police)/i\n  ];\n\n  const ABUSE = [\n\n    /\\b(?:fuck(?:ing)?|f\\*ck|bastard|motherf)/i,\n    /\\b(?:scammer|cheater|chor|fraud(?:ster)?|thief|lootera)\\b/i\n  ];\n\n  const PUBLIC = [\n\n    /(?:post|share|upload)\\s+(?:on\\s+)?(?:instagram|twitter|facebook|youtube|social\\s+media)/i,\n    /viral\\s+(?:kar|karna|karunga|karungi)/i,\n    /expose\\s+(?:you|your\\s+brand|this\\s+company)/i\n  ];\n\n  return (\n    LEGAL.some(r => r.test(t)) ||\n    ABUSE.some(r => r.test(t)) ||\n    PUBLIC.some(r => r.test(t)) ||\n    intent === \"escalate_senior\"\n  );\n}\n\nconst isEdgeCase =\n  detectEdgeCase(cleanText, finalIntent);\n\n// ── 8. SUPPORT CLASSIFICATION ──\n\nconst isSupport = !!(\n\n  orderId ||\n\n  input.phoneNumber ||\n\n  finalIntent !== \"general_query\" ||\n\n  /order|return|exchange|refund|track|ship|cancel|deliver/i.test(cleanText)\n);\n\n// ── 9. SHOULD REPLY LOGIC (block all unwanted cases) ──\n\nlet shouldReply  = true;\nlet block_reason = null;\nlet risk_flag    = false;\n\n// BLOCK: parse failure\nif (llmParseError) {\n  shouldReply  = false;\n  block_reason = \"llm_parse_failed\";\n  risk_flag    = true;\n}\n// BLOCK: intent that requires WhatsApp/manual confirmation\nelse if (\n  finalIntent === \"video_missing\" ||\n  finalIntent === \"video_received_confirm\" ||\n  finalIntent === \"refund_status\"          // belt‑and‑braces (already mapped to general_query above)\n) {\n  shouldReply  = false;\n  block_reason = \"video_based_or_refund_status_intent\";\n  risk_flag    = false;\n}  \n// BLOCK: generic intent (including refund_status mapped to general_query)\nelse if (finalIntent === \"general_query\") {\n  shouldReply  = false;\n  block_reason = \"general_query_detected\";\n  risk_flag    = false;\n}\n// BLOCK: edge cases\nelse if (isEdgeCase) {\n  shouldReply  = false;\n  block_reason = \"edge_case_escalation\";\n  risk_flag    = true;\n}\n// BLOCK: multi order\nelse if (isMultiOrder) {\n  shouldReply  = false;\n  block_reason = \"multi_order_detected\";\n  risk_flag    = true;\n}\n// angry tone still gets a reply (with risk flag)\nelse if (finalTone === \"angry\") {\n  shouldReply = true;\n  risk_flag   = true;\n}\n\n// NOTE: video_received_confirm is NOT blocked (will reply)\n\n// ── 10. RETURN ──\n\nreturn {\n\n  ...input,\n\n  intent: finalIntent,\n\n  tone: finalTone,\n\n  isSupport,\n\n  isAddressChange,\n\n  isEdgeCase,\n\n  shouldReply,\n\n  risk_flag,\n\n  block_reason,\n\n  order_count,\n\n  multi_order_ids: isMultiOrder\n    ? otherIds\n    : [],\n\n  debug: {\n\n    llm_parse_error: llmParseError,\n\n    order_count,\n\n    other_order_ids: otherIds,\n\n    risk_flag,\n\n    block_reason,\n\n    isAddressChange,\n\n    isEdgeCase\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1904,
+        -304
+      ],
+      "id": "ac6ee359-109a-4359-9e3f-d00a00ce7114",
+      "name": "Support Eval"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "dea7a2a1-6fc5-409b-bdc6-ff987e449918",
+              "leftValue": "={{ $json.shouldReply }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1680,
+        -304
+      ],
+      "id": "eb06666d-d469-457b-98a7-9ba363d24e3d",
+      "name": "Angry/Edge"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "da082e49-9efc-4ec1-b909-ce4d479d8395",
+              "leftValue": "={{ $json.isSupport }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1456,
+        -400
+      ],
+      "id": "3b61d430-427c-4e04-afa5-9fa6530a0aa6",
+      "name": "Support/Not"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-store.myshopify.com/admin/oauth/access_token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "client_id",
+              "value": "YOUR_SHOPIFY_CLIENT_ID"
+            },
+            {
+              "name": "client_secret",
+              "value": "YOUR_SHOPIFY_CLIENT_SECRET"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -784,
+        -576
+      ],
+      "id": "ce87cb2a-5208-44f8-b96c-f679e4f59781",
+      "name": "Token",
+      "retryOnFail": true,
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "url": "=https://your-store.myshopify.com/admin/api/2026-04/orders.json?name=%23{{ $('Support/Not').item.json.orderId }}&status=any",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Shopify-Access-Token",
+              "value": "={{$json[\"access_token\"]}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -336,
+        -496
+      ],
+      "id": "4dd30f09-e5c0-4401-8b7b-e025d1a3d5f5",
+      "name": "Shopify",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputId = ($('Support/Not').item.json.orderId || \"\").toString().replace(\"#\", \"\").trim();\nconst contextData = $('Support/Not').item.json;\nconst orders = $json.orders || [];\nconst normalize = (val) => val?.toString().replace(\"#\", \"\").trim();\nconst matched = orders.find(o => {\n  const name = normalize(o.name);\n  const number = normalize(o.order_number);\n  return name === inputId || number === inputId;\n});\nif (!matched) {\n  return [{ json: { ...contextData, orders, order: null, matchFound: false } }];\n}\nreturn [{ json: { ...contextData, orders, order: matched, matchFound: true } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -112,
+        -496
+      ],
+      "id": "1368b3f0-1978-4700-8488-cf4b393ffaaa",
+      "name": "Match Order"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "dd7d373f-faa9-421e-aedf-23deacf69fbd",
+              "leftValue": "={{\n  (\n    ($json.intent === \"cancel\" ||\n     $json.intent === \"change_size\" ||\n     $json.intent === \"change_pincode\")\n    &&\n    ($json.order?.fulfillment_status === null ||\n     $json.order?.fulfillment_status === \"unfulfilled\")\n  )\n}}",
+              "rightValue": "=",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        784,
+        -496
+      ],
+      "id": "a2cb3b3b-1f2b-4590-92f1-2e301a3ec5f0",
+      "name": "Cancel/Unfullfilled"
+    },
+    {
+      "parameters": {
+        "jsCode": "const order = $json.order || $json.orders?.[0];\nconst fulfillment = order?.fulfillments?.[0];\n\nconst trackingNumber = fulfillment?.tracking_number ?? null;\nconst trackingUrl = fulfillment?.tracking_url ?? null;\nconst status = order?.fulfillment_status ?? null;\n\nreturn {\n  ...$json,\n  orderId: order?.name ?? null,\n  trackingNumber,\n  trackingUrl,\n  status\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        -400
+      ],
+      "id": "f46a2ad6-4d12-459c-98a7-1e14503e0624",
+      "name": "Link Builder."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── 1. CUSTOMER NAME ──\nlet fName = \"\";\nlet lName = \"\";\ntry {\n  fName = $('Shopify').first().json.orders[0].billing_address.first_name || \"\";\n  lName = $('Shopify').first().json.orders[0].customer.last_name || \"\";\n} catch (e) { fName = \"Customer\"; }\nconst customerName = (fName + \" \" + lName).trim() || \"Customer\";\nconst greeting = `Hello ${customerName},`;\n\n// ── 2. INPUTS ──\nlet intent = $json.intent || \"general_query\";\nconst msg = ($json.cleanText || \"\").toLowerCase();\nconst orderId = ($json.orderId || \"\").toString().replace(\"#\", \"\").trim();\nconst trackingUrl = $json.trackingUrl || (\"https://track.shipway.com/t/\" + $json.trackingNumber);\nconst hasTracking =\n  !!($json.trackingNumber || trackingUrl);\n\nconst liveStatus =\n  ($json.liveShipmentStatus ||\n   $json.order?.fulfillment_status ||\n   \"\").toLowerCase();\n\n// FORCE tracking intent if shipment exists\nif (\n  hasTracking &&\n  [\n    \"delivery_timing\",\n    \"processing_details\",\n    \"not_fulfilled\",\n    \"general_query\"\n  ].includes(intent)\n) {\n  intent = \"tracking_info\";\n}\nconst isAddressChange = $json.isAddressChange || false;\n\n// ── SMART FALLBACK: Override intent using real order data ──\nif ($json.order) {\n  const fs = ($json.liveShipmentStatus || $json.order?.fulfillment_status || \"unfulfilled\").toLowerCase();\n  const fs_fin = ($json.order.financial_status ?? \"\").toLowerCase();\n  const deliveryWords = /when|kab|kitne|days|time|deliver|aayega|milega|status|update/i;\n\n  // 1. change_size on delivered → exchange\n  if (intent === \"change_size\" && fs === \"delivered\") {\n    intent = \"request_exchange\";\n  }\n\n  // 2. general_query with order status context\n  if (intent === \"general_query\") {\n    if (fs === \"unfulfilled\" || fs === \"pending\" || fs === \"null\" || fs === \"unknown\") {\n      intent = deliveryWords.test(msg) ? \"delivery_timing\" : \"not_fulfilled\";\n    } else if (fs === \"in_transit\" || fs === \"out_for_delivery\" || fs === \"ready_for_pickup\") {\n      intent = \"tracking_info\";\n    } else if (fs === \"delivered\" || fs === \"fulfilled\") {\n      const returnExchangeWords = /return|exchange|size|refund|fit|quality|issue|not satisfied|defective/i;\n      if (returnExchangeWords.test(msg)) {\n        intent = /exchange|size/i.test(msg) ? \"request_exchange\" : \"request_return\";\n      } else {\n        intent = \"tracking_info\";\n      }\n    }\n  }\n\n  // 3. video_missing but customer says already sent → avoid incorrect accusation\n  if (intent === \"video_missing\" && /already sent|sent video|shared|uploaded|attached|provided|whatsapp|submitted/i.test(msg)) {\n    intent = \"general_query\";\n  }\n\n  // 4. pickup_delay when video likely missing → ask for video\n  if (intent === \"pickup_delay\") {\n    if (!/video|unboxing|sent|whatsapp|shared|upload/i.test(msg)) {\n      intent = \"video_missing\";\n    }\n  }\n\n  // 5. Cancel logic – use live shipment status for correct state\n  const fs_top = ($json.liveShipmentStatus || $json.order?.fulfillment_status || \"unfulfilled\").toLowerCase();\n  if (intent === \"cancel\" || intent === \"order_cancelled\") {\n    if (fs_top === \"delivered\") {\n      intent = \"request_return\";\n    } else if (fs_top === \"in_transit\" || fs_top === \"out_for_delivery\") {\n      intent = \"intransit_cancel\";\n    } else if (fs_top === \"unfulfilled\" || fs_top === \"pending\") {\n      intent = \"cancel\";\n    } else {\n      intent = \"intransit_cancel\";\n    }\n  }\n}\n\n// 6. Address change override\nif (isAddressChange && ![\"change_pincode\",\"address_locked\",\"pincode_unserviceable\"].includes(intent)) {\n  intent = \"change_pincode\";\n}\n\n// ── 3. REPLY TEMPLATES (EXACTLY AS BEFORE, NO CHANGES) ──\nlet message = \"\";\n\nswitch (intent) {\n  case \"general_query\":\n    message = `${greeting}\\nThank you for reaching out to us. Please share the details of your query, so we can assist you further.`; break;\n  case \"get_orderid\":\n    message = `${greeting}\\n\\nThank you for reaching out to us! \\nOnce we receive the details, we will promptly update.`; break;\n  case \"missing_orderid\":\n    message = `${greeting}\\n\\nThank you for reaching out to us!\\n\\nPlease share your Order ID or registered mobile number so we can check the status for you?`; break;\n  case \"not_fulfilled\":\n    message = `${greeting} \\nThank you for shopping with Indo Era!\\nYour order has been confirmed and will be processed soon. Once it is processed, you will receive the tracking details on your registered email ID.`; break;\n  case \"delivery_timing\":\n    message = `${greeting}\\n\\nThank you for contacting us\\n\\nYour order has been confirmed and will be processed soon. Once processed, you will receive the tracking details at your registered email ID\\n\\nDelivery usually takes 4-5 working days.`; break;\n  case \"processing_details\":\n    message = `${greeting}\\n\\nThank you for reaching out to us!\\n\\nGenerally, processing takes 3-4 working days before tracking details are available.`; break;\n  case \"tracking_info\":\n    message = `${greeting}\\n\\nThank you for shopping with Indo Era!\\n\\nWe're excited to let you know that your order has been shipped!\\n\\nTrack your order here: ${trackingUrl}\\n\\nImportant: If you wish to return or exchange the product, please record an unboxing video while opening the package upon receiving it.`; break;\n  case \"request_exchange\":\n    message = `${greeting}\\nThank you for reaching out to us!\\n\\nVisit the \"Customer Experience\" section on our website and select \"Raise Exchange\". Enter the first five digits of your order ID (without the hashtag), along with the email ID or phone number you used during purchase, or click https://www.your-store.in/apps/ezy/returns\\nTo proceed, please share the Reason for exchange, Order ID, and an Unboxing video on our WhatsApp: +91 9512191118`; break;\n  case \"request_return\":\n    message = `${greeting}\\nThank you for reaching out to us!\\n\\nVisit the \"Customer Experience\" section on our website and select \"Raise Return\". Enter the first five digits of your order ID (without the hashtag), along with the email ID or phone number you used during purchase, or click https://www.your-store.in/apps/ezy/returns\\n\\nTo proceed, please share the Reason for return, Order ID, and an Unboxing video on our WhatsApp: +91 9512191118`; break;\n  case \"intransit_cancel\":\n    message = `${greeting}\\nThank you for reaching out to us!\\nWe have checked your order and it is currently in transit. At this stage, we're unable to cancel it.\\nYou can track your order here: ${trackingUrl}\\nOnce delivered, you may initiate a return request if needed.`; break;\n  case \"change_size\":\n    message = `${greeting}\\n\\nYour order has already been shipped, so we're unable to change the size. Once delivered, you can request an exchange if needed.\\nTrack here: ${trackingUrl}`;\n    break;\n  case \"change_pincode\":\n    message = `${greeting}\\n\\nYour order is already on the way. We can't change the delivery pincode at this stage. Please coordinate with the delivery agent to ensure safe delivery.\\nTrack here: ${trackingUrl}`;\n    break;\n  case \"refund_status\":\n    message = `${greeting}\\nYour refund has been initiated and should complete within 24-48 hours.\\nIf not received within that time, it will automatically reflect in your original payment method within 2-3 business days.`; break;\n  case \"return_error\":\n    message = `${greeting} \\nOur website is currently having an issue with raising returns/exchanges. Please share your Order ID and return product image on WhatsApp: +91 9512191118 and we will raise the request for you.`; break;\n  case \"video_missing\":\n    message = `${customerName},\\nThank you for your message.\\nWe checked our WhatsApp records but have not yet received any unboxing video from your registered number.\\nPlease resend the following on WhatsApp +91 9512191118:\\n\\n- Order ID\\n- Reason for return\\n- Unboxing video of the product\\n\\nOnce received, we will proceed immediately.`; break;\n  case \"how_video\":\n    message = `Hello,\\n\\nFor your return/exchange request, please share an unboxing video of the product. If you don't have one, make a video clearly showing the product with the tag visible.\\n\\nShare your Order ID and the video via WhatsApp to +91 9512191118 for approval.`; break;\n  case \"fake_delivery\":\n    message = `${customerName},\\n\\nThank you for bringing this to our attention. We sincerely apologize for the inconvenience.\\nWe have checked and the order shows as delivered. We will investigate this further and get back to you shortly.`; break;\n  case \"return_approved\":\n    message = `${greeting}\\nYour return request for Order ID #${orderId} has been approved. Pickup will be completed within 2-3 working days.\\nPlease keep an eye out for courier calls, and inform us once the product is collected.\\n\\nEnsure the item is handed over with all original tags and packaging intact.\\nRefund will be processed 7 days after pickup is completed.`; break;\n  case \"pickup_scheduled\":\n    message = `${greeting}\\nPickup has been scheduled for Order ID #${orderId}.\\nPlease keep an eye out for courier calls and inform us once the product is collected.\\nTrack here: ${trackingUrl}\\nEnsure the item is handed over with all original tags and packaging intact.`; break;\n  case \"return_no_refund\":\n    message = `Hi ${customerName},\\n\\nThank you for reaching out. Your refund has been processed from our side and will reflect in your original payment method within 2-3 business days.`; break;\n  case \"refund_return\":\n    message = `${greeting} \\nThank you for contacting us.\\n\\nWe have received your return request and it will be approved by end of day. Pickup will be completed within 2-3 days.\\nOnce we receive the item at our warehouse, the refund will be initiated within 7 days.`; break;\n  case \"return_intransit\":\n    message = `${greeting} \\nWe've checked your return and it is currently in transit. Once received at our warehouse, we will initiate the refund.\\nTrack here: ${trackingUrl}`; break;\n  case \"address_locked\":\n    message = `${greeting}\\nThank you for reaching out!\\n\\nYour order has already been shipped and we're unable to make address changes at this stage.\\nTrack here: ${trackingUrl}\\n\\nWe recommend coordinating directly with the delivery agent to ensure delivery to your correct address.`; break;\n  case \"pincode_unserviceable\":\n    message = `${greeting}\\n\\nThank you for shopping with Indo Era.\\n\\nThe pincode you provided is not serviceable for delivery. Please provide an alternative serviceable pincode.`; break;\n  case \"pickup_delay\":\n  message = `Hello ${customerName},\\n\\nWe sincerely apologize for the delay in pickup. Your return request for Order #${orderId} has been escalated to our logistics team. You will receive an update within 2 working days.`;\n  break;\n  case \"policy_expired\":\n    message = `${customerName},\\nThank you for reaching out regarding your return.\\nOur return policy allows return requests within 15 days of delivery.\\n\\nSince the 15-day window has passed, we are unable to process this return request.`; break;\n  case \"out_of_stock\":\n    message = `${customerName},\\nWe regret to inform you that the item you ordered is currently out of stock.\\n\\nPlease let us know how you'd like to proceed:\\n1. Wait for the product to become available.\\n2. Cancel the order for a full refund.`; break;\n  case \"escalate_senior\":\n    message = `${customerName},\\nThank you for reaching out. I am forwarding your concern to our senior team for review. Kindly allow us 2 working days to look into the matter and provide an update.`; break;\n  case \"pickup_arranging\":\n    message = `${customerName},\\nYour return request has been received. You will receive a separate message shortly with reverse pickup details. Please pack the product securely.`; break;\n  case \"consignee_refused\":\n    message = `${greeting} \\n\\nYour order is currently undelivered as it was refused by the consignee.\\n\\nPlease let us know how you'd like to proceed.`; break;\n  case \"video_received_confirm\": \n    message = `Hello ${customerName},\\n\\nThank you for informing us that you have sent the video. We will check our WhatsApp records and get back to you within 24 hours.`; break;\n  default:\n    message = `${greeting}\\nThank you for reaching out to us. Please share the details of your query, so we can assist you further.`;\n}\n\nreturn { ...$json, replyMessage: message, customerName, usedIntent: intent };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        -400
+      ],
+      "id": "c57d7ea7-4e32-45a9-897a-287489d6a18a",
+      "name": "Response builder"
+    },
+    {
+      "parameters": {
+        "jsCode": "const to        = $('Set Email').item.json.email || $('Set Email').item.json.from;\nconst subject   = 'Re: ' + ($('Set Email').item.json.subject || 'Your Order');\nconst messageId = $('Set Email').item.json.messageId;\nconst threadId  = $('Set Email').item.json.threadId;\nconst body      = $json.replyMessage;\n\nconst emailLines = [\n  'MIME-Version: 1.0',\n  'Content-Type: text/plain; charset=UTF-8',\n  'To: ' + to,\n  'Subject: ' + subject,\n  'In-Reply-To: ' + messageId,\n  'References: ' + messageId,\n  '',\n  body\n];\n\nconst raw = Buffer.from(emailLines.join('\\r\\n'))\n  .toString('base64')\n  .replace(/\\+/g, '-')\n  .replace(/\\//g, '_')\n  .replace(/=+$/, '');\n\nreturn { ...$json, threadId, raw };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        -400
+      ],
+      "id": "2d66931d-db8a-4962-996f-52116386ecdd",
+      "name": "Reply Cleaner"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7a058373-70b4-48d0-917c-a982fae3c054",
+              "name": "email body",
+              "value": "={{$json.cleanText}}",
+              "type": "string"
+            },
+            {
+              "id": "9005d097-e0c0-4580-bea1-04965b831c58",
+              "name": "finalOrderId",
+              "value": "={{$json.orderId}}",
+              "type": "string"
+            },
+            {
+              "id": "1a5cbf9d-4f8f-4f94-9ae0-9382b1faf668",
+              "name": "replyMessage",
+              "value": "={{$json.replyMessage}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1680,
+        -400
+      ],
+      "id": "ced81c1d-8b3a-4354-8818-ab438c91fc1e",
+      "name": "Edit Fields2"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "57e1fd2c-5b76-4e56-ae00-9a7ff871bf90",
+              "name": "email body",
+              "value": "={{$json.cleanText}}",
+              "type": "string"
+            },
+            {
+              "id": "a5b65f7f-6d58-4b67-8bd9-542aecf5a4a4",
+              "name": "finalOrderId",
+              "value": "={{$json.orderId}}",
+              "type": "string"
+            },
+            {
+              "id": "69f980bc-57cc-4a2b-a175-b52f02ad8124",
+              "name": "replyMessage",
+              "value": "=\"Cancel Intent - Not Fulfilled - NoOp\"",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1680,
+        -592
+      ],
+      "id": "04711073-5711-4a66-9dd2-ec25976b8be8",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d4957cca-de7b-43cf-b861-1d0984a1d55e",
+              "name": "email body",
+              "value": "={{$json.cleanText}}",
+              "type": "string"
+            },
+            {
+              "id": "93e02e99-1197-4d4f-b74f-f8df36e40de1",
+              "name": "finalOrderId",
+              "value": "={{$json.orderId}}",
+              "type": "string"
+            },
+            {
+              "id": "81d84f9c-c1d2-4891-ab17-04858d5ef46f",
+              "name": "replyMessage",
+              "value": "=\"Not Support - No Reply\"",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1680,
+        -208
+      ],
+      "id": "8e59d7d3-98e4-486a-a848-e3ac0858ef9c",
+      "name": "Edit Fields3"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b12723fb-92a4-4d79-948c-4102a28d06bc",
+              "name": "email body",
+              "value": "={{$json.cleanText}}",
+              "type": "string"
+            },
+            {
+              "id": "77d101ee-b355-48ca-b995-d46e5904c05b",
+              "name": "finalOrderId",
+              "value": "={{$json.orderId}}",
+              "type": "string"
+            },
+            {
+              "id": "09ea0604-d98f-4e06-9694-548ce98ec4fa",
+              "name": "replyMessage",
+              "value": "=BLOCKED - {{ $json.block_reason }} - tone: {{ $json.tone }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1680,
+        -16
+      ],
+      "id": "7f01d357-bc1e-4879-971c-83755de45861",
+      "name": "Edit Fields4"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "finalOrderId": "={{ $('Set Email').first().json.orderId?.trim() || '' }}",
+            "email body": "={{ $('Clean').item.json.rawText.replace(/^Index:.*\\n?/im, '').trim() }}",
+            "replyMessage": "={{ $json.replyMessage || '' }}",
+            "Index": "={{ $('Clean').item.json.extractedIndex }}",
+            "Guest Tone": "={{ $('Support Eval').item.json.tone }}",
+            "Guest Intent": "={{ $('Support Eval').item.json.intent }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "finalOrderId",
+              "displayName": "finalOrderId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email body",
+              "displayName": "email body",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Guest Tone",
+              "displayName": "Guest Tone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Guest Intent",
+              "displayName": "Guest Intent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "replyMessage",
+              "displayName": "replyMessage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Index",
+              "displayName": "Index",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Check",
+              "displayName": "Check",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1904,
+        -304
+      ],
+      "id": "e8cd57e1-2cea-48c4-bb98-60fa6fe0dcb6",
+      "name": "Append row in sheet1",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Qy40pGROn6VuUDhc",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "removeLabels",
+        "threadId": "={{ ($('Get many messages').item.json.threadId || '').replace(/[^a-zA-Z0-9]/g, '') }}",
+        "labelIds": "YOUR_GMAIL_LABEL_ID"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2128,
+        -144
+      ],
+      "id": "55154cb5-04db-4bdd-8348-6278b4488a26",
+      "name": "Remove label from thread",
+      "webhookId": "6f74c75d-06a7-4998-bd2c-45b422dcb3ba",
+      "retryOnFail": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GxJC2zOiBmfF1nrd",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "YOUR_GMAIL_LABEL_ID"
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -3024,
+        -240
+      ],
+      "id": "edf8976c-c3b8-4254-80f9-d04bd3a2c547",
+      "name": "Get many messages",
+      "webhookId": "e4fa6901-d835-4d38-8f98-efc55280e7d0",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GxJC2zOiBmfF1nrd",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.order?.fulfillments?.[0]?.tracking_url || ('https://track.shipway.com/t/' + $json.order?.fulfillments?.[0]?.tracking_number) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        336,
+        -576
+      ],
+      "id": "1e3b3eca-582a-471f-afab-9427736949a5",
+      "name": "Live Tracking Fetch"
+    },
+    {
+      "parameters": {
+        "jsCode": "const html = ($input.first().json.data || \"\").toLowerCase();\n\nlet liveShipmentStatus = \"unknown\";\n\n// Define patterns with word boundaries to avoid substring false matches\nconst patterns = [\n  { regex: /\\bout for delivery\\b/i, status: \"out_for_delivery\" },\n  { regex: /\\bshipment delivered\\b/i, status: \"delivered\" },\n  { regex: /\\bdelivered\\b/i, status: \"delivered\", exclude: /\\bexpected delivery\\b|\\bdelivery date\\b|\\bdelivery partner\\b/i },\n  { regex: /\\bin transit\\b/i, status: \"in_transit\" },\n  { regex: /\\bready for pickup\\b/i, status: \"ready_for_pickup\" },\n  { regex: /\\brto\\b/i, status: \"rto\" },\n  { regex: /\\bundelivered\\b/i, status: \"undelivered\" }\n];\n\nfor (const p of patterns) {\n  if (p.regex.test(html)) {\n    // If there's an exclusion pattern and it matches, skip this status\n    if (p.exclude && p.exclude.test(html)) {\n      continue;\n    }\n    liveShipmentStatus = p.status;\n    break; // First match wins (priority order)\n  }\n}\n\n// Fallback: if still unknown but contains \"delivered\" without the exclusion patterns,\n// we already caught it via the \"delivered\" pattern above. This is safe.\n\nreturn {\n  ...$('Match Order').first().json,\n  liveShipmentStatus,\n  trackingHtmlChecked: true\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        -576
+      ],
+      "id": "73c884ce-aade-4771-975a-6edf41710812",
+      "name": "Normalize Live Tracking"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the global static data (persists across runs)\nconst globalData = $getWorkflowStaticData('global');\n\n// If we have a token and it was fetched less than 23 hours ago, use it\nif (globalData.accessToken && globalData.tokenTimestamp) {\n  const now = Date.now();\n  const ageMs = now - globalData.tokenTimestamp;\n  const maxAgeMs = 23 * 60 * 60 * 1000; // 23 hours in ms\n\n  if (ageMs < maxAgeMs) {\n    // Token is still valid – output it directly and STOP the Token node from running\n    return [{\n      json: {\n        access_token: globalData.accessToken,\n        fromCache: true\n      }\n    }];\n  }\n}\n\n// No valid cached token – continue to the Token node\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        -496
+      ],
+      "id": "622fe11e-ddee-4c76-aa43-181be2cadbf5",
+      "name": "Check Token Cache"
+    },
+    {
+      "parameters": {
+        "jsCode": "const globalData = $getWorkflowStaticData('global');\nconst accessToken = $input.first().json.access_token;\nglobalData.accessToken = accessToken;\nglobalData.tokenTimestamp = Date.now();\n\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        -576
+      ],
+      "id": "69e5a655-a401-475d-b4e6-442b5920e5e8",
+      "name": "Token to Cache"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d8c93b61-0459-4d8f-852e-3ce479b78ea8",
+              "leftValue": "={{$json[\"access_token\"]}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1008,
+        -496
+      ],
+      "id": "8a2f084a-4fa8-4ebb-9d5d-af0ae0b95dc6",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "cd0dff2a-a4b0-4d07-b808-617869c19517",
+              "leftValue": "={{ $json.order?.fulfillments?.[0]?.tracking_number }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        112,
+        -496
+      ],
+      "id": "58836440-f53f-4166-bddb-55d6508751b9",
+      "name": "If1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get many messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Clean",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean": {
+      "main": [
+        [
+          {
+            "node": "Set Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Email": {
+      "main": [
+        [
+          {
+            "node": "Intent/Tone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent/Tone": {
+      "main": [
+        [
+          {
+            "node": "Support Eval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Support Eval": {
+      "main": [
+        [
+          {
+            "node": "Angry/Edge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Angry/Edge": {
+      "main": [
+        [
+          {
+            "node": "Support/Not",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Fields4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Support/Not": {
+      "main": [
+        [
+          {
+            "node": "Check Token Cache",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Fields3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token": {
+      "main": [
+        [
+          {
+            "node": "Token to Cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shopify": {
+      "main": [
+        [
+          {
+            "node": "Match Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Order": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel/Unfullfilled": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Link Builder.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Link Builder.": {
+      "main": [
+        [
+          {
+            "node": "Response builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Response builder": {
+      "main": [
+        [
+          {
+            "node": "Reply Cleaner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cleaner": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields2": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields3": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields4": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append row in sheet1": {
+      "main": [
+        [
+          {
+            "node": "Remove label from thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove label from thread": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many messages": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Live Tracking Fetch": {
+      "main": [
+        [
+          {
+            "node": "Normalize Live Tracking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Live Tracking": {
+      "main": [
+        [
+          {
+            "node": "Cancel/Unfullfilled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Token Cache": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token to Cache": {
+      "main": [
+        [
+          {
+            "node": "Shopify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Shopify",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Live Tracking Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cancel/Unfullfilled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "7b88b69a-fd33-46d7-a645-c514a08fe4c3",
+  "meta": {
+    "instanceId": "827abb11a9e4284c9960c2b03833fd911a9c290dfc85220fbc61b375e053ab57"
+  },
+  "id": "iTKXqmam7lCCu4h0",
+  "tags": []
+}
